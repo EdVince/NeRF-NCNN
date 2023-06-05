@@ -491,7 +491,9 @@ int main()
     const int hash_encoder_max_res = 1024;
     const int hash_encoder_feat_dim = 2; // 写死了，要改的话就要改shader代码
     const int begin_fast_hash_level = 6;
-
+    const int hash_encoder_out_dim = 32;
+    const int hash_encoder_hash_map_sizes[16] = { 4096, 10648, 21952, 50656, 117656, 262144, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288 };
+    const int hash_encoder_offsets[16] = { 0, 4096, 14744, 36696, 87352, 205008, 467152, 991440, 1515728, 2040016, 2564304, 3088592, 3612880, 4137168, 4661456, 5185744 };
 
 
     {
@@ -685,6 +687,15 @@ int main()
             composite_test_pipeline->create(spirv.data(), spirv.size() * 4, specializations);
         }
 
+        // 初始化xyz_encoder
+        ncnn::Net xyz_encoder_net;
+        xyz_encoder_net.load_param("assets/xyz_encoder.param");
+        xyz_encoder_net.load_model("assets/xyz_encoder.bin");
+
+        // 初始化rgb_net
+        ncnn::Net rgb_net;
+        rgb_net.load_param("assets/rgb_net.param");
+        rgb_net.load_model("assets/rgb_net.bin");
 
 
 
@@ -1001,10 +1012,6 @@ int main()
                     /////////////////////////////////////////////////////////////////////////////// pos_encoder
                     ncnn::VkMat output_embedding_gpu;
                     {
-                        int hash_encoder_out_dim = 32;
-                        int hash_encoder_hash_map_sizes[16] = { 4096, 10648, 21952, 50656, 117656, 262144, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288 };
-                        int hash_encoder_offsets[16] = { 0, 4096, 14744, 36696, 87352, 205008, 467152, 991440, 1515728, 2040016, 2564304, 3088592, 3612880, 4137168, 4661456, 5185744 };
-
                         // input_pos
                         ncnn::VkMat input_pos_gpu;
                         cmd.record_clone(x, input_pos_gpu, opt);
@@ -1082,12 +1089,8 @@ int main()
                         cmd.submit_and_wait();
                         cmd.reset();
 
-                        ncnn::Net xyz_encoder;
-                        xyz_encoder.load_param("assets/xyz_encoder.param");
-                        xyz_encoder.load_model("assets/xyz_encoder.bin");
-
                         {
-                            ncnn::Extractor ex = xyz_encoder.create_extractor();
+                            ncnn::Extractor ex = xyz_encoder_net.create_extractor();
                             ex.input("in0", output_embedding_cpu);
                             ex.extract("out0", h_cpu);
                         }
@@ -1159,10 +1162,6 @@ int main()
                 /////////////////////////////////////////////////////////////////////////////// rgb_net
                 ncnn::Mat rgbs_cpu;
                 {
-                    ncnn::Net rgb_net;
-                    rgb_net.load_param("assets/rgb_net.param");
-                    rgb_net.load_model("assets/rgb_net.bin");
-
                     {
                         ncnn::Extractor ex = rgb_net.create_extractor();
                         ex.input("in0", d_cpu);
@@ -1199,8 +1198,6 @@ int main()
                         }
                         cmd.record_clone(alive_indices_cpu, alive_indices_gpu, opt);
                     }
-
-                    float T_threshold = 0.0001;
 
                     // 跑kernel
                     {
@@ -1293,6 +1290,8 @@ int main()
 
         /////////////////////////////////////////////////////////////////////////////// 释放
         {
+            xyz_encoder_net.clear();
+
             delete composite_test_pipeline;
             delete dir_encoder_pipeline;
             delete hash_encoder_pipeline;
