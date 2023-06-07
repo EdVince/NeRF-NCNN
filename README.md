@@ -10,7 +10,19 @@ NeRF implemented by [ncnn](https://github.com/Tencent/ncnn) framework based on C
 
 ## Demo
 
-![image](./resources/lego.gif)
+![image](./resources/Chair.gif)
+
+![image](./resources/Ficus.gif)
+
+![image](./resources/Hotdog.gif)
+
+![image](./resources/Lego.gif)
+
+![image](./resources/Materials.gif)
+
+![image](./resources/Mic.gif)
+
+![image](./resources/Ship.gif)
 
 
 ## References
