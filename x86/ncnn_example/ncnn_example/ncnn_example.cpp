@@ -545,7 +545,7 @@ int main()
     float h = 800;
     const float downsample = 1.0;
     const int WH = 640000;
-    const std::string dataset = "Lego";
+    const std::string dataset = "Ship";
     const float model_scale = 0.5;
     const float NEAR_DISTANCE = 0.01;
     const int MAX_SAMPLES = 1024;
@@ -565,32 +565,32 @@ int main()
 
 
     {
-        std::ifstream file("assets/model_density_bitfield.dat", std::ios::in | std::ios::binary);
+        std::ifstream file("assets/" + dataset + "/model_density_bitfield.dat", std::ios::in | std::ios::binary);
         file.read((char*)&model_density_bitfield, sizeof model_density_bitfield);
         file.close();
     }
     {
-        std::ifstream file("assets/model_pos_encoder_hash_table.dat", std::ios::in | std::ios::binary);
+        std::ifstream file("assets/" + dataset + "/model_pos_encoder_hash_table.dat", std::ios::in | std::ios::binary);
         file.read((char*)&model_pos_encoder_hash_table, sizeof model_pos_encoder_hash_table);
         file.close();
     }
 
-    {
-        std::ifstream file("assets/xyz_encoder_weight_0_32x64.dat", std::ios::in | std::ios::binary);
-        file.read((char*)&xyz_encoder_weight_0_32x64, sizeof xyz_encoder_weight_0_32x64);
-        file.close();
-    }
-    {
-        std::ifstream file("assets/xyz_encoder_weight_1_64x16.dat", std::ios::in | std::ios::binary);
-        file.read((char*)&xyz_encoder_weight_1_64x16, sizeof xyz_encoder_weight_1_64x16);
-        file.close();
-    }
+    //{
+    //    std::ifstream file("assets/xyz_encoder_weight_0_32x64.dat", std::ios::in | std::ios::binary);
+    //    file.read((char*)&xyz_encoder_weight_0_32x64, sizeof xyz_encoder_weight_0_32x64);
+    //    file.close();
+    //}
+    //{
+    //    std::ifstream file("assets/xyz_encoder_weight_1_64x16.dat", std::ios::in | std::ios::binary);
+    //    file.read((char*)&xyz_encoder_weight_1_64x16, sizeof xyz_encoder_weight_1_64x16);
+    //    file.close();
+    //}
 
 
     // read_intrinsics
     ncnn::Mat K(3, 3);
     {
-        std::ifstream in("assets/intrinsics.txt");
+        std::ifstream in("assets/" + dataset + "/intrinsics.txt");
         float fx, fy;
         in >> fx;
         fy = fx;
@@ -617,7 +617,7 @@ int main()
     ncnn::Mat c2w_012s(3, 3, POSE, (size_t)4u, 1);
     ncnn::Mat c2w_3s(3, 1, POSE, (size_t)4u, 1);
     {
-        std::ifstream in("assets/bbox.txt");
+        std::ifstream in("assets/" + dataset + "/bbox.txt");
         float x_min, y_min, z_min, x_max, y_max, z_max;
         in >> x_min; in >> y_min; in >> z_min;
         in >> x_max; in >> y_max; in >> z_max;
@@ -631,12 +631,15 @@ int main()
         if (dataset == "Lego") {
             data_scale *= 1.1;
         }
+        else if (dataset == "Mic") {
+            data_scale *= 1.2;
+        }
 
         {
             for (int i = 0; i < POSE; ++i) {
                 std::stringstream ss;
                 ss << std::setw(4) << std::setfill('0') << i;
-                std::string pose_filename = "assets/poses/2_" + ss.str() + ".txt";
+                std::string pose_filename = "assets/" + dataset + "/pose/2_" + ss.str() + ".txt";
                 // std::cout << "loading pose: " << pose_filename << std::endl;
 
                 ncnn::Mat c2w_012 = c2w_012s.channel(i);
@@ -825,8 +828,8 @@ int main()
         //xyz_encoder_net.opt.use_fp16_arithmetic = false;
         //xyz_encoder_net.opt.use_fp16_storage = false;
         //xyz_encoder_net.opt.use_fp16_packed = false;
-        xyz_encoder_net.load_param("assets/xyz_encoder_gemm.param");
-        xyz_encoder_net.load_model("assets/xyz_encoder_gemm.bin");
+        xyz_encoder_net.load_param(("assets/" + dataset + "/xyz_encoder.param").c_str());
+        xyz_encoder_net.load_model(("assets/" + dataset + "/xyz_encoder.bin").c_str());
 
         // 初始化rgb_net
         ncnn::Net rgb_net;
@@ -837,8 +840,8 @@ int main()
         //rgb_net.opt.use_fp16_arithmetic = false;
         //rgb_net.opt.use_fp16_storage = false;
         //rgb_net.opt.use_fp16_packed = false;
-        rgb_net.load_param("assets/rgb_net.param");
-        rgb_net.load_model("assets/rgb_net.bin");
+        rgb_net.load_param(("assets/" + dataset + "/rgb_net.param").c_str());
+        rgb_net.load_model(("assets/" + dataset + "/rgb_net.bin").c_str());
 
         // 预上传hash_table
         ncnn::VkMat params_gpu;
@@ -853,31 +856,31 @@ int main()
             cmd.reset();
         }
 
-        // 预上传xyz_encoder_weight_0_gpu
-        ncnn::VkMat xyz_encoder_weight_0_gpu;
-        {
-            ncnn::Mat xyz_encoder_weight_0(32 * 64);
-            float* p = (float*)xyz_encoder_weight_0.data;
-            for (int i = 0; i < 32 * 64; i++) {
-                p[i] = xyz_encoder_weight_0_32x64[i];
-            }
-            cmd.record_clone(xyz_encoder_weight_0, xyz_encoder_weight_0_gpu, opt);
-            cmd.submit_and_wait();
-            cmd.reset();
-        }
+        //// 预上传xyz_encoder_weight_0_gpu
+        //ncnn::VkMat xyz_encoder_weight_0_gpu;
+        //{
+        //    ncnn::Mat xyz_encoder_weight_0(32 * 64);
+        //    float* p = (float*)xyz_encoder_weight_0.data;
+        //    for (int i = 0; i < 32 * 64; i++) {
+        //        p[i] = xyz_encoder_weight_0_32x64[i];
+        //    }
+        //    cmd.record_clone(xyz_encoder_weight_0, xyz_encoder_weight_0_gpu, opt);
+        //    cmd.submit_and_wait();
+        //    cmd.reset();
+        //}
 
-        // 预上传xyz_encoder_weight_1_gpu
-        ncnn::VkMat xyz_encoder_weight_1_gpu;
-        {
-            ncnn::Mat xyz_encoder_weight_1(64 * 16);
-            float* p = (float*)xyz_encoder_weight_1.data;
-            for (int i = 0; i < 64 * 16; i++) {
-                p[i] = xyz_encoder_weight_1_64x16[i];
-            }
-            cmd.record_clone(xyz_encoder_weight_1, xyz_encoder_weight_1_gpu, opt);
-            cmd.submit_and_wait();
-            cmd.reset();
-        }
+        //// 预上传xyz_encoder_weight_1_gpu
+        //ncnn::VkMat xyz_encoder_weight_1_gpu;
+        //{
+        //    ncnn::Mat xyz_encoder_weight_1(64 * 16);
+        //    float* p = (float*)xyz_encoder_weight_1.data;
+        //    for (int i = 0; i < 64 * 16; i++) {
+        //        p[i] = xyz_encoder_weight_1_64x16[i];
+        //    }
+        //    cmd.record_clone(xyz_encoder_weight_1, xyz_encoder_weight_1_gpu, opt);
+        //    cmd.submit_and_wait();
+        //    cmd.reset();
+        //}
 
 
         // 循环生成每一个pose的图像
@@ -1663,8 +1666,8 @@ int main()
             rgb_net.clear();
             xyz_encoder_net.clear();
 
-            delete xyz_encoder_weight_0_gemm_pipeline;
-            delete xyz_encoder_weight_1_gemm_pipeline;
+            //delete xyz_encoder_weight_0_gemm_pipeline;
+            //delete xyz_encoder_weight_1_gemm_pipeline;
             delete composite_test_pipeline;
             delete dir_encoder_pipeline;
             delete hash_encoder_pipeline;
