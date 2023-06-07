@@ -5,7 +5,7 @@ NeRF implemented by [ncnn](https://github.com/Tencent/ncnn) framework based on C
 ***Performance***
 |                  | taichi & python | ncnn & c++ |
 | ---------------- | --------------- | ---------- |
-| i7-12700+RTX3060 | ~15fps          | ~0.45fps    |
+| i7-12700+RTX3060 | ~15fps          | ~0.6fps    |
 
 
 ## Demo

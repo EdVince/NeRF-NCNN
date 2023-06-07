@@ -131,20 +131,23 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>D:\develop\Develop\github\nerf\ncnn_example\ncnn_example\opencv-mobile-4.5.1-windows-vs2019\x64\include;C:\cpp\VulkanSDK\1.3.243.0\Include;D:\develop\Develop\github\nerf\ncnn_example\ncnn_example\ncnn\install\include\ncnn;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>C:\cpp\VulkanSDK\1.3.243.0\Include;D:\develop\Develop\github\nerf\ncnn_example\ncnn_example\ncnn\install\include\ncnn;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>D:\develop\Develop\github\nerf\ncnn_example\ncnn_example\opencv-mobile-4.5.1-windows-vs2019\x64\x64\vc16\staticlib;C:\cpp\VulkanSDK\1.3.243.0\Lib;D:\develop\Develop\github\nerf\ncnn_example\ncnn_example\ncnn\install\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>ncnn.lib;vulkan-1.lib;opencv_core451.lib;opencv_features2d451.lib;opencv_highgui451.lib;opencv_imgproc451.lib;opencv_photo451.lib;opencv_video451.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\cpp\VulkanSDK\1.3.243.0\Lib;D:\develop\Develop\github\nerf\ncnn_example\ncnn_example\ncnn\install\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ncnn.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="ncnn_example.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="stb_image_write.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
