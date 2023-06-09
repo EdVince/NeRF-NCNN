@@ -22,9 +22,6 @@
 unsigned char model_density_bitfield[262144] = { 0 };
 float model_pos_encoder_hash_table[11420064] = { 0 };
 
-float xyz_encoder_weight_0_32x64[32 * 64] = { 0 };
-float xyz_encoder_weight_1_64x16[64 * 16] = { 0 };
-
 
 
 static const char clean_float_kernel[] = R"(
@@ -479,36 +476,25 @@ void main()
 }
 )";
 
-
-static const char gemm2_kernel[] = R"(
+static const char copy_kernel[] = R"(
 #version 450
 
-// M是动态的，N和K在编译时可以确定
-layout (constant_id = 0) const int N = 2048;
-layout (constant_id = 1) const int K = 2048;
-// 是否用Relu
-layout (constant_id = 2) const int relu = 1;
+layout (binding = 0) readonly  buffer src { float src_data[]; };
+layout (binding = 1) writeonly buffer dst { float dst_data[]; };
 
-layout (binding = 0) readonly  buffer A { float A_data[]; };
-layout (binding = 1) readonly  buffer B { float B_data[]; };
-layout (binding = 2) writeonly buffer C { float C_data[]; };
+layout (push_constant) uniform parameter
+{
+    int limit;
+} p;
 
 void main()
 {
-    const int k = int(gl_GlobalInvocationID.x);
-    const int m = int(gl_GlobalInvocationID.y);
+    int gx = int(gl_GlobalInvocationID.x);
 
-    float sum = 0.0f;
-    for (uint i = 0; i < N; i++) {
-        sum += (10.0 * A_data[m * N + i]) * (10.0 * B_data[i * K + k]);
-    }
-
-    if (relu > 0 && sum < 0) {
-        C_data[m * K + k] = float(0);
-    }
-    else {
-        C_data[m * K + k] = float(sum / 100.0);
-    }
+    if (gx < p.limit)
+        dst_data[gx] = src_data[gx];
+    else
+        dst_data[gx] = float(0);
 }
 )";
 
@@ -540,12 +526,12 @@ ncnn::Mat get_ray_directions(int H, int W, ncnn::Mat K)
 int main()
 {
     // 一些参数
-    const int POSE = 200;
+    const int POSE = 1;
     float w = 800;
     float h = 800;
     const float downsample = 1.0;
     const int WH = 640000;
-    const std::string dataset = "Ship";
+    const std::string dataset = "Lego";
     const float model_scale = 0.5;
     const float NEAR_DISTANCE = 0.01;
     const int MAX_SAMPLES = 1024;
@@ -563,7 +549,7 @@ int main()
 
 
 
-
+    // 读取模型的一些固定数据
     {
         std::ifstream file("assets/" + dataset + "/model_density_bitfield.dat", std::ios::in | std::ios::binary);
         file.read((char*)&model_density_bitfield, sizeof model_density_bitfield);
@@ -574,17 +560,6 @@ int main()
         file.read((char*)&model_pos_encoder_hash_table, sizeof model_pos_encoder_hash_table);
         file.close();
     }
-
-    //{
-    //    std::ifstream file("assets/xyz_encoder_weight_0_32x64.dat", std::ios::in | std::ios::binary);
-    //    file.read((char*)&xyz_encoder_weight_0_32x64, sizeof xyz_encoder_weight_0_32x64);
-    //    file.close();
-    //}
-    //{
-    //    std::ifstream file("assets/xyz_encoder_weight_1_64x16.dat", std::ios::in | std::ios::binary);
-    //    file.read((char*)&xyz_encoder_weight_1_64x16, sizeof xyz_encoder_weight_1_64x16);
-    //    file.close();
-    //}
 
 
     // read_intrinsics
@@ -695,6 +670,9 @@ int main()
         opt.use_int8_inference = false;
         ncnn::VkCompute cmd(vkdev);
 
+
+        /////////////////////////////////////////////////////////////////////////// 初始化各种算子、Pipeline、Net
+
         // 初始化gemm
         ncnn::Layer* gemm;
         gemm = ncnn::create_layer(ncnn::LayerType::Gemm);
@@ -791,57 +769,43 @@ int main()
             composite_test_pipeline->create(spirv.data(), spirv.size() * 4, specializations);
         }
 
-        // 初始化xyz_encoder_weight_0_gemm_pipeline
-        ncnn::Pipeline* xyz_encoder_weight_0_gemm_pipeline;
+        // 初始化copy_pipeline
+        ncnn::Pipeline* copy_pipeline;
         {
             static std::vector<uint32_t> spirv;
-            std::vector<ncnn::vk_specialization_type> specializations(3);
-            specializations[0].i = 32; // N=32
-            specializations[1].i = 64; // K=64
-            specializations[2].i = 1; // with relu
-            ncnn::compile_spirv_module(gemm2_kernel, sizeof(gemm2_kernel) - 1, opt, spirv);
-            xyz_encoder_weight_0_gemm_pipeline = new ncnn::Pipeline(vkdev);
-            xyz_encoder_weight_0_gemm_pipeline->set_optimal_local_size_xyz(8, 8, 1);
-            xyz_encoder_weight_0_gemm_pipeline->create(spirv.data(), spirv.size() * 4, specializations);
-        }
-
-        // 初始化xyz_encoder_weight_1_gemm_pipeline
-        ncnn::Pipeline* xyz_encoder_weight_1_gemm_pipeline;
-        {
-            static std::vector<uint32_t> spirv;
-            std::vector<ncnn::vk_specialization_type> specializations(3);
-            specializations[0].i = 64; // N=64
-            specializations[1].i = 16; // K=16
-            specializations[2].i = 0; // without relu
-            ncnn::compile_spirv_module(gemm2_kernel, sizeof(gemm2_kernel) - 1, opt, spirv);
-            xyz_encoder_weight_1_gemm_pipeline = new ncnn::Pipeline(vkdev);
-            xyz_encoder_weight_1_gemm_pipeline->set_optimal_local_size_xyz(8, 8, 1);
-            xyz_encoder_weight_1_gemm_pipeline->create(spirv.data(), spirv.size() * 4, specializations);
+            std::vector<ncnn::vk_specialization_type> specializations(0);
+            ncnn::compile_spirv_module(copy_kernel, sizeof(copy_kernel) - 1, opt, spirv);
+            copy_pipeline = new ncnn::Pipeline(vkdev);
+            copy_pipeline->set_optimal_local_size_xyz(64, 1, 1);
+            copy_pipeline->create(spirv.data(), spirv.size() * 4, specializations);
         }
 
         // 初始化xyz_encoder
+        // 如果要用vulkan的话，需要用带gemm后缀的模型
+        // 并且输入前要做pad确保h维度是4的整数倍
+        // 得到推理结果还要把后面pad的cut掉
         ncnn::Net xyz_encoder_net;
-        //xyz_encoder_net.opt.use_vulkan_compute = true;
-        //xyz_encoder_net.opt.blob_vkallocator = blob_vkallocator;
-        //xyz_encoder_net.opt.workspace_vkallocator = blob_vkallocator;
-        //xyz_encoder_net.opt.staging_vkallocator = staging_vkallocator;
-        //xyz_encoder_net.opt.use_fp16_arithmetic = false;
-        //xyz_encoder_net.opt.use_fp16_storage = false;
-        //xyz_encoder_net.opt.use_fp16_packed = false;
-        xyz_encoder_net.load_param(("assets/" + dataset + "/xyz_encoder.param").c_str());
-        xyz_encoder_net.load_model(("assets/" + dataset + "/xyz_encoder.bin").c_str());
+        xyz_encoder_net.opt.use_vulkan_compute = true;
+        xyz_encoder_net.opt.blob_vkallocator = blob_vkallocator;
+        xyz_encoder_net.opt.workspace_vkallocator = blob_vkallocator;
+        xyz_encoder_net.opt.staging_vkallocator = staging_vkallocator;
+        xyz_encoder_net.load_param(("assets/" + dataset + "/xyz_encoder_gemm.param").c_str());
+        xyz_encoder_net.load_model(("assets/" + dataset + "/xyz_encoder_gemm.bin").c_str());
 
         // 初始化rgb_net
+        // 情况跟xyz_encoder一样
         ncnn::Net rgb_net;
-        //rgb_net.opt.use_vulkan_compute = true;
-        //rgb_net.opt.blob_vkallocator = blob_vkallocator;
-        //rgb_net.opt.workspace_vkallocator = blob_vkallocator;
-        //rgb_net.opt.staging_vkallocator = staging_vkallocator;
-        //rgb_net.opt.use_fp16_arithmetic = false;
-        //rgb_net.opt.use_fp16_storage = false;
-        //rgb_net.opt.use_fp16_packed = false;
-        rgb_net.load_param(("assets/" + dataset + "/rgb_net.param").c_str());
-        rgb_net.load_model(("assets/" + dataset + "/rgb_net.bin").c_str());
+        rgb_net.opt.use_vulkan_compute = true;
+        rgb_net.opt.blob_vkallocator = blob_vkallocator;
+        rgb_net.opt.workspace_vkallocator = blob_vkallocator;
+        rgb_net.opt.staging_vkallocator = staging_vkallocator;
+        rgb_net.load_param(("assets/" + dataset + "/rgb_net_gemm.param").c_str());
+        rgb_net.load_model(("assets/" + dataset + "/rgb_net_gemm.bin").c_str());
+
+
+
+
+        /////////////////////////////////////////////////////////////////////////// 预上传固定数据到vulkan
 
         // 预上传hash_table
         ncnn::VkMat params_gpu;
@@ -856,31 +820,48 @@ int main()
             cmd.reset();
         }
 
-        //// 预上传xyz_encoder_weight_0_gpu
-        //ncnn::VkMat xyz_encoder_weight_0_gpu;
-        //{
-        //    ncnn::Mat xyz_encoder_weight_0(32 * 64);
-        //    float* p = (float*)xyz_encoder_weight_0.data;
-        //    for (int i = 0; i < 32 * 64; i++) {
-        //        p[i] = xyz_encoder_weight_0_32x64[i];
-        //    }
-        //    cmd.record_clone(xyz_encoder_weight_0, xyz_encoder_weight_0_gpu, opt);
-        //    cmd.submit_and_wait();
-        //    cmd.reset();
-        //}
+        // 预上传density_bitfield
+        ncnn::VkMat density_bitfield_gpu;
+        {
+            ncnn::Mat density_bitfield_cpu(262144);
+            int* data = (int*)density_bitfield_cpu.data;
+            for (int i = 0; i < 262144; i++) {
+                data[i] = (int)model_density_bitfield[i];
+            }
+            cmd.record_clone(density_bitfield_cpu, density_bitfield_gpu, opt);
+            cmd.submit_and_wait();
+            cmd.reset();
+        }
 
-        //// 预上传xyz_encoder_weight_1_gpu
-        //ncnn::VkMat xyz_encoder_weight_1_gpu;
-        //{
-        //    ncnn::Mat xyz_encoder_weight_1(64 * 16);
-        //    float* p = (float*)xyz_encoder_weight_1.data;
-        //    for (int i = 0; i < 64 * 16; i++) {
-        //        p[i] = xyz_encoder_weight_1_64x16[i];
-        //    }
-        //    cmd.record_clone(xyz_encoder_weight_1, xyz_encoder_weight_1_gpu, opt);
-        //    cmd.submit_and_wait();
-        //    cmd.reset();
-        //}
+        // 预上传hash_map_sizes
+        ncnn::VkMat hash_map_sizes_gpu;
+        {
+            ncnn::Mat hash_map_sizes(16);
+            int* p = (int*)hash_map_sizes.data;
+            for (int i = 0; i < 16; i++) {
+                p[i] = hash_encoder_hash_map_sizes[i];
+            }
+            cmd.record_clone(hash_map_sizes, hash_map_sizes_gpu, opt);
+            cmd.submit_and_wait();
+            cmd.reset();
+        }
+
+        // 预上传offsets
+        ncnn::VkMat offsets_gpu;
+        {
+            ncnn::Mat offsets(16);
+            int* p = (int*)offsets.data;
+            for (int i = 0; i < 16; i++) {
+                p[i] = hash_encoder_offsets[i];
+            }
+            cmd.record_clone(offsets, offsets_gpu, opt);
+            cmd.submit_and_wait();
+            cmd.reset();
+        }
+
+
+
+
 
 
         // 循环生成每一个pose的图像
@@ -919,6 +900,7 @@ int main()
             ncnn::VkMat hits_t_gpu;
             ncnn::VkMat rays_o_gpu;
             {
+                // 上传数据
                 cmd.record_clone(c2w_3, rays_o_gpu, opt);
                 //hits_t_gpu.create(2, 640000, 4u, 1, blob_vkallocator);
                 {
@@ -926,25 +908,29 @@ int main()
                     cmd.record_clone(hits_t_cpu, hits_t_gpu, opt);
                 }
 
-                std::vector<ncnn::VkMat> bindings(3);
-                bindings[0] = rays_o_gpu;
-                bindings[1] = rays_d_gpu;
-                bindings[2] = hits_t_gpu;
+                // 跑kernel
+                {
+                    std::vector<ncnn::VkMat> bindings(3);
+                    bindings[0] = rays_o_gpu;
+                    bindings[1] = rays_d_gpu;
+                    bindings[2] = hits_t_gpu;
 
-                std::vector<ncnn::vk_constant_type> constants(2);
-                constants[0].f = 0;
-                constants[1].f = 0.5;
+                    std::vector<ncnn::vk_constant_type> constants(2);
+                    constants[0].f = 0;
+                    constants[1].f = 0.5;
 
-                ncnn::VkMat dispatcher;
-                dispatcher.w = WH; // 640000
-                dispatcher.h = 1;
-                dispatcher.c = 1;
+                    ncnn::VkMat dispatcher;
+                    dispatcher.w = WH; // 640000
+                    dispatcher.h = 1;
+                    dispatcher.c = 1;
 
-                cmd.record_pipeline(ray_aabb_intersect_pipeline, bindings, constants, dispatcher);
+                    cmd.record_pipeline(ray_aabb_intersect_pipeline, bindings, constants, dispatcher);
 
-                cmd.submit_and_wait();
-                cmd.reset();
+                    cmd.submit_and_wait();
+                    cmd.reset();
+                }
             }
+
 
 
             /////////////////////////////////////////////////////////////////////////////// __render_rays_test
@@ -971,24 +957,11 @@ int main()
             int model_grid_size = 128;
             float model_exp_step_factor = exp_step_factor;
 
-            // 上传density_bitfield
-            ncnn::VkMat density_bitfield_gpu;
-            {
-                ncnn::Mat density_bitfield_cpu(262144);
-                int* data = (int*)density_bitfield_cpu.data;
-                for (int i = 0; i < 262144; i++) {
-                    data[i] = (int)model_density_bitfield[i];
-                }
-                cmd.record_clone(density_bitfield_cpu, density_bitfield_gpu, opt);
-                //cmd.submit_and_wait();
-                //cmd.reset();
-            }
-            
 
             ncnn::VkMat opacity_gpu(N_rays, (size_t)4u, 1, blob_vkallocator);
             ncnn::VkMat depth_gpu(N_rays, (size_t)4u, 1, blob_vkallocator);
             ncnn::VkMat rgb_gpu(3, N_rays, (size_t)4u, 1, blob_vkallocator);
-            {
+            { // 为新开辟的vkmat置零，不置零会出问题
                 {
                     std::vector<ncnn::VkMat> bindings(1);
                     bindings[0] = opacity_gpu;
@@ -1022,17 +995,6 @@ int main()
                 cmd.submit_and_wait();
                 cmd.reset();
             }
-            //ncnn::VkMat opacity_gpu, depth_gpu, rgb_gpu;
-            //{
-            //    ncnn::Mat opacity_cpu(N_rays, (size_t)4u, 1); opacity_cpu.fill<float>(0.0f);
-            //    ncnn::Mat depth_cpu(N_rays, (size_t)4u, 1); depth_cpu.fill<float>(0.0f);
-            //    ncnn::Mat rgb_cpu(3, N_rays, (size_t)4u, 1); rgb_cpu.fill<float>(0.0f);
-            //    cmd.record_clone(opacity_cpu, opacity_gpu, opt);
-            //    cmd.record_clone(depth_cpu, depth_gpu, opt);
-            //    cmd.record_clone(rgb_cpu, rgb_gpu, opt);
-            //    cmd.submit_and_wait();
-            //    cmd.reset();
-            //}
 
 
 
@@ -1073,7 +1035,7 @@ int main()
                     ncnn::VkMat ts_gpu(model_N_rays * model_max_samples, 4u, 1, blob_vkallocator);
                     ncnn::VkMat samples_counter_gpu(model_N_rays, 4u, 1, blob_vkallocator);
                     ncnn::Mat ray_indices_cpu, valid_mask_cpu, deltas_cpu, ts_cpu, samples_counter_cpu;
-                    {
+                    { // 为新开辟的vkmat置零，不置零会出问题
                         {
                             std::vector<ncnn::VkMat> bindings(1);
                             bindings[0] = ray_indices_gpu;
@@ -1127,19 +1089,6 @@ int main()
                         cmd.submit_and_wait();
                         cmd.reset();
                     }
-                    //ncnn::Mat ray_indices_cpu(model_N_rays * model_max_samples); ray_indices_cpu.fill<int>(0);
-                    //ncnn::Mat valid_mask_cpu(model_N_rays * model_max_samples); valid_mask_cpu.fill<int>(0);
-                    //ncnn::Mat deltas_cpu(model_N_rays * model_max_samples); deltas_cpu.fill<float>(0.0f);
-                    //ncnn::Mat ts_cpu(model_N_rays * model_max_samples); ts_cpu.fill<float>(0.0f);
-                    //ncnn::Mat samples_counter_cpu(model_N_rays); samples_counter_cpu.fill<int>(0);
-                    //ncnn::VkMat ray_indices_gpu, valid_mask_gpu, deltas_gpu, ts_gpu, samples_counter_gpu;
-                    //cmd.record_clone(ray_indices_cpu, ray_indices_gpu, opt);
-                    //cmd.record_clone(valid_mask_cpu, valid_mask_gpu, opt);
-                    //cmd.record_clone(deltas_cpu, deltas_gpu, opt);
-                    //cmd.record_clone(ts_cpu, ts_gpu, opt);
-                    //cmd.record_clone(samples_counter_cpu, samples_counter_gpu, opt);
-                    //cmd.submit_and_wait();
-                    //cmd.reset();
 
                     
                     // 跑kernel
@@ -1176,6 +1125,7 @@ int main()
                         cmd.record_clone(deltas_gpu, deltas_cpu, opt);
                         cmd.record_clone(ts_gpu, ts_cpu, opt);
                         cmd.record_clone(samples_counter_gpu, samples_counter_cpu, opt);
+
                         cmd.submit_and_wait();
                         cmd.reset();
                     }
@@ -1297,7 +1247,7 @@ int main()
 
                         // output_embedding
                         output_embedding_gpu.create(hash_encoder_out_dim, x.h, (size_t)4u, 1, blob_vkallocator);
-                        {
+                        { // 为新开辟的vkmat置零，不置零会出问题
                             std::vector<ncnn::VkMat> bindings(1);
                             bindings[0] = output_embedding_gpu;
                             std::vector<ncnn::vk_constant_type> constants(0);
@@ -1307,32 +1257,7 @@ int main()
                             dispatcher.c = 1;
                             cmd.record_pipeline(clean_float_pipeline, bindings, constants, dispatcher);
                         }
-                        //{
-                        //    ncnn::Mat output_embedding_cpu(hash_encoder_out_dim, x.h); output_embedding_cpu.fill<float>(0.0f);
-                        //    cmd.record_clone(output_embedding_cpu, output_embedding_gpu, opt);
-                        //}
 
-                        // hash_map_sizes
-                        ncnn::VkMat hash_map_sizes_gpu;
-                        {
-                            ncnn::Mat hash_map_sizes(16);
-                            int* p = (int*)hash_map_sizes.data;
-                            for (int i = 0; i < 16; i++) {
-                                p[i] = hash_encoder_hash_map_sizes[i];
-                            }
-                            cmd.record_clone(hash_map_sizes, hash_map_sizes_gpu, opt);
-                        }
-
-                        // offsets
-                        ncnn::VkMat offsets_gpu;
-                        {
-                            ncnn::Mat offsets(16);
-                            int* p = (int*)offsets.data;
-                            for (int i = 0; i < 16; i++) {
-                                p[i] = hash_encoder_offsets[i];
-                            }
-                            cmd.record_clone(offsets, offsets_gpu, opt);
-                        }
 
                         // 跑kernel
                         {
@@ -1358,88 +1283,76 @@ int main()
                             cmd.reset();
                         }
                     }
-                    
-                    
 
 
                     /////////////////////////////////////////////////////////////////////////////// xyz_encoder
                     {
-                        
-                        ncnn::Mat output_embedding_cpu;
-                        cmd.record_clone(output_embedding_gpu, output_embedding_cpu, opt);
-                        cmd.submit_and_wait();
-                        cmd.reset();
-
-                        //double t1 = ncnn::get_current_time();
-                        { // 超级无敌慢，急需优化
-                            //ncnn::Mat test;
-                            ncnn::Extractor ex = xyz_encoder_net.create_extractor();
-                            ex.input("in0", output_embedding_cpu);
-                            //ex.extract("3", test, 1);
-                            ex.extract("out0", h_cpu, 1);
-                            //{
-                            //    double sum = 0.0;
-                            //    float* data = (float*)test.data;
-                            //    for (int i = 0; i < test.h * test.w; i++) {
-                            //        sum += double(data[i]);
-                            //    }
-                            //    // printf("(%d,%d,%d),%.10lf\n", test.c, test.h, test.w, sum);
-                            //}
-                        }
-                        //double t2 = ncnn::get_current_time();
-                        //printf("cost:%f\n",t2-t1);
-
-                        // printf("%d\n", output_embedding_cpu.h);
-
-                        /*
-                        // 跑kernel
-                        double t1 = ncnn::get_current_time();
+                        int old_h = output_embedding_gpu.h;
+                        int pad_h = 4 * (old_h / 4 + 1);
+                        ncnn::VkMat output_embedding_padding_gpu(output_embedding_gpu.w, pad_h, (size_t)4u, 1, blob_vkallocator);
                         {
-                            ncnn::VkMat inter_out(64, output_embedding_gpu.h, (size_t)4u, 1, blob_vkallocator);
+                            // padding
                             {
-                                std::vector<ncnn::VkMat> bindings(3);
+                                std::vector<ncnn::VkMat> bindings(2);
                                 bindings[0] = output_embedding_gpu;
-                                bindings[1] = xyz_encoder_weight_0_gpu;
-                                bindings[2] = inter_out;
+                                bindings[1] = output_embedding_padding_gpu;
 
-                                std::vector<ncnn::vk_constant_type> constants(0);
+                                std::vector<ncnn::vk_constant_type> constants(1);
+                                constants[0].i = output_embedding_gpu.w * old_h;
 
                                 ncnn::VkMat dispatcher;
-                                dispatcher.w = 64;
-                                dispatcher.h = output_embedding_gpu.h;
+                                dispatcher.w = output_embedding_gpu.w * pad_h;
+                                dispatcher.h = 1;
                                 dispatcher.c = 1;
 
-                                cmd.record_pipeline(xyz_encoder_weight_0_gemm_pipeline, bindings, constants, dispatcher);
+                                cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
 
                                 cmd.submit_and_wait();
                                 cmd.reset();
                             }
-                            ncnn::VkMat final_out(16, output_embedding_gpu.h, (size_t)4u, 1, blob_vkallocator);
-                            {
-                                std::vector<ncnn::VkMat> bindings(3);
-                                bindings[0] = inter_out;
-                                bindings[1] = xyz_encoder_weight_1_gpu;
-                                bindings[2] = final_out;
 
-                                std::vector<ncnn::vk_constant_type> constants(0);
-
-                                ncnn::VkMat dispatcher;
-                                dispatcher.w = 16;
-                                dispatcher.h = output_embedding_gpu.h;
-                                dispatcher.c = 1;
-
-                                cmd.record_pipeline(xyz_encoder_weight_1_gemm_pipeline, bindings, constants, dispatcher);
-
-                                cmd.submit_and_wait();
-                                cmd.reset();
-                            }
-                            cmd.record_clone(final_out, h_cpu, opt);
+                            ncnn::Mat output_embedding_padding_cpu;
+                            cmd.record_clone(output_embedding_padding_gpu, output_embedding_padding_cpu, opt);
                             cmd.submit_and_wait();
                             cmd.reset();
+
+                            ncnn::Mat h_pad_cpu;
+                            ncnn::Extractor ex = xyz_encoder_net.create_extractor();
+                            ex.input("in0", output_embedding_padding_cpu);
+                            ex.extract("out0", h_pad_cpu);
+                            
+                            ncnn::VkMat h_pad_gpu;
+                            cmd.record_clone(h_pad_cpu, h_pad_gpu, opt);
+                            cmd.submit_and_wait();
+                            cmd.reset();
+
+                            ncnn::VkMat h_gpu(h_pad_gpu.w, old_h, (size_t)4u, 1, blob_vkallocator);
+
+                            // split
+                            {
+                                std::vector<ncnn::VkMat> bindings(2);
+                                bindings[0] = h_pad_gpu;
+                                bindings[1] = h_gpu;
+
+                                std::vector<ncnn::vk_constant_type> constants(1);
+                                constants[0].i = h_pad_gpu.w * old_h;
+
+                                ncnn::VkMat dispatcher;
+                                dispatcher.w = h_pad_gpu.w * old_h;
+                                dispatcher.h = 1;
+                                dispatcher.c = 1;
+
+                                cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
+
+                                cmd.submit_and_wait();
+                                cmd.reset();
+                            }
+
+                            cmd.record_clone(h_gpu, h_cpu, opt);
+                            cmd.submit_and_wait();
+                            cmd.reset();
+
                         }
-                        double t2 = ncnn::get_current_time();
-                        printf("cost:%f\n", t2 - t1);
-                        */
                     }
 
                     sigmas_cpu.create(h_cpu.h);
@@ -1475,7 +1388,7 @@ int main()
                     cmd.record_clone(d, input_dir_gpu, opt);
 
                     dir_encoder_output_embedding_gpu.create(16, d.h, (size_t)4u, 1, blob_vkallocator);
-                    {
+                    { // 为新开辟的vkmat置零，不置零会出问题
                         std::vector<ncnn::VkMat> bindings(1);
                         bindings[0] = dir_encoder_output_embedding_gpu;
                         std::vector<ncnn::vk_constant_type> constants(0);
@@ -1485,10 +1398,6 @@ int main()
                         dispatcher.c = 1;
                         cmd.record_pipeline(clean_float_pipeline, bindings, constants, dispatcher);
                     }
-                    //{
-                    //    ncnn::Mat dir_encoder_output_embedding_cpu(16, d.h); dir_encoder_output_embedding_cpu.fill<float>(0.0f);
-                    //    cmd.record_clone(dir_encoder_output_embedding_cpu, dir_encoder_output_embedding_gpu, opt);
-                    //}
 
                     // 跑kernel
                     {
@@ -1519,31 +1428,106 @@ int main()
                 /////////////////////////////////////////////////////////////////////////////// rgb_net
                 ncnn::Mat rgbs_cpu;
                 {
-                    { // 超级无敌慢，急需优化
-                        ncnn::Extractor ex = rgb_net.create_extractor();
-                        ex.input("in0", d_cpu);
-                        ex.input("in1", h_cpu);
-                        ex.extract("out0", rgbs_cpu);
+                    int old_h = dir_encoder_output_embedding_gpu.h;
+                    int pad_h = 4 * (old_h / 4 + 1);
+                    ncnn::VkMat d_padding_gpu(dir_encoder_output_embedding_gpu.w, pad_h, (size_t)4u, 1, blob_vkallocator);
+                    ncnn::VkMat h_padding_gpu(h_cpu.w, pad_h, (size_t)4u, 1, blob_vkallocator);
+                    // padding
+                    {
+                        std::vector<ncnn::VkMat> bindings(2);
+                        bindings[0] = dir_encoder_output_embedding_gpu;
+                        bindings[1] = d_padding_gpu;
+
+                        std::vector<ncnn::vk_constant_type> constants(1);
+                        constants[0].i = dir_encoder_output_embedding_gpu.w * old_h;
+
+                        ncnn::VkMat dispatcher;
+                        dispatcher.w = dir_encoder_output_embedding_gpu.w * pad_h;
+                        dispatcher.h = 1;
+                        dispatcher.c = 1;
+
+                        cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
+
+                        cmd.submit_and_wait();
+                        cmd.reset();
                     }
+                    {
+                        ncnn::VkMat h_gpu;
+                        cmd.record_clone(h_cpu, h_gpu, opt);
+
+                        std::vector<ncnn::VkMat> bindings(2);
+                        bindings[0] = h_gpu;
+                        bindings[1] = h_padding_gpu;
+
+                        std::vector<ncnn::vk_constant_type> constants(1);
+                        constants[0].i = h_cpu.w * old_h;
+
+                        ncnn::VkMat dispatcher;
+                        dispatcher.w = h_cpu.w * pad_h;
+                        dispatcher.h = 1;
+                        dispatcher.c = 1;
+
+                        cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
+
+                        cmd.submit_and_wait();
+                        cmd.reset();
+                    }
+                    
+                    ncnn::Mat d_padding_cpu, h_padding_cpu;
+                    cmd.record_clone(d_padding_gpu, d_padding_cpu, opt);
+                    cmd.record_clone(h_padding_gpu, h_padding_cpu, opt);
+                    cmd.submit_and_wait();
+                    cmd.reset();
+
+                    ncnn::Mat rgbs_padding_cpu;
+                    {
+                        ncnn::Extractor ex = rgb_net.create_extractor();
+                        ex.input("in0", d_padding_cpu);
+                        ex.input("in1", h_padding_cpu);
+                        ex.extract("out0", rgbs_padding_cpu);
+                    }
+
+                    ncnn::VkMat rgbs_padding_gpu;
+                    cmd.record_clone(rgbs_padding_cpu, rgbs_padding_gpu, opt);
+                    cmd.submit_and_wait();
+                    cmd.reset();
+
+                    ncnn::VkMat rgbs_gpu(rgbs_padding_cpu.w, old_h, (size_t)4u, 1, blob_vkallocator);
+
+                    // split
+                    {
+                        std::vector<ncnn::VkMat> bindings(2);
+                        bindings[0] = rgbs_padding_gpu;
+                        bindings[1] = rgbs_gpu;
+
+                        std::vector<ncnn::vk_constant_type> constants(1);
+                        constants[0].i = rgbs_padding_cpu.w * old_h;
+
+                        ncnn::VkMat dispatcher;
+                        dispatcher.w = rgbs_padding_cpu.w * old_h;
+                        dispatcher.h = 1;
+                        dispatcher.c = 1;
+
+                        cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
+
+                        cmd.submit_and_wait();
+                        cmd.reset();
+                    }
+
+                    cmd.record_clone(rgbs_gpu, rgbs_cpu, opt);
+                    cmd.submit_and_wait();
+                    cmd.reset();
                 }
 
 
                 /////////////////////////////////////////////////////////////////////////////// composite_test
                 {
                     // 准备输入输出
-                    ncnn::VkMat sigmas_gpu;
+                    ncnn::VkMat sigmas_gpu, rgbs_gpu, deltas_gpu, ts_gpu, pack_info_gpu;
                     cmd.record_clone(sigmas_cpu, sigmas_gpu, opt);
-
-                    ncnn::VkMat rgbs_gpu;
                     cmd.record_clone(rgbs_cpu, rgbs_gpu, opt);
-
-                    ncnn::VkMat deltas_gpu;
                     cmd.record_clone(deltas, deltas_gpu, opt);
-
-                    ncnn::VkMat ts_gpu;
                     cmd.record_clone(ts, ts_gpu, opt);
-
-                    ncnn::VkMat pack_info_gpu;
                     cmd.record_clone(packed_info, pack_info_gpu, opt);
 
                     ncnn::VkMat alive_indices_gpu;
@@ -1592,20 +1576,6 @@ int main()
                                     sum += 1;
                                 }
                             }
-
-                            //int m1 = 0;
-                            //for (int i = 0; i < alive_indices_cpu.w; i++) {
-                            //    if (data[i] == -1) {
-                            //        m1 += 1;
-                            //    }
-                            //}
-                            //int m2 = 0;
-                            //for (int i = 0; i < alive_indices_cpu.w; i++) {
-                            //    if (data[i] == -2) {
-                            //        m2 += 1;
-                            //    }
-                            //}
-                            //printf("%d,%d,%d\n", sum, m1, m2);
 
                             alive_indices.clear();
                             alive_indices.resize(sum);
@@ -1666,8 +1636,7 @@ int main()
             rgb_net.clear();
             xyz_encoder_net.clear();
 
-            //delete xyz_encoder_weight_0_gemm_pipeline;
-            //delete xyz_encoder_weight_1_gemm_pipeline;
+            delete copy_pipeline;
             delete composite_test_pipeline;
             delete dir_encoder_pipeline;
             delete hash_encoder_pipeline;
