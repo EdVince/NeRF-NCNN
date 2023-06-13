@@ -3,12 +3,17 @@
 NeRF implemented by [ncnn](https://github.com/Tencent/ncnn) framework based on C++, reference from [taichi-nerfs](https://github.com/taichi-dev/taichi-nerfs)
 
 ***Performance***
-|                  | taichi & pytorch | ncnn & c++ |
-| ---------------- | ---------------- | ---------- |
-| i7-12700+RTX3060 | ~15fps           | ~0.6fps    |
+|                         | taichi & pytorch | ncnn & c++ |
+| ----------------------- | ---------------- | ---------- |
+| i7-12700+RTX3060        | ~15fps           | ~0.6fps    |
+| Qualcomm Snapdragon 865 |                  | ~0.08fps   |
 
 
 ## Demo
+
+<p align="center">
+  <img src="./resources/android.jpg" width="320x">
+</p>
 
 ![image](./resources/Chair.gif)
 

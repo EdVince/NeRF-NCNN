@@ -1,0 +1,7 @@
+7767517
+5 5
+Input                    in0                      0 1 in0
+Input                    in1                      0 1 in1
+Permute                  permute_2                1 1 in0 2 0=1
+Permute                  permute_1                1 1 in1 3 0=1
+MatMul                   matmul_0                 2 1 2 3 out0

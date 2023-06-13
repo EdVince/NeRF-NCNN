@@ -526,7 +526,7 @@ ncnn::Mat get_ray_directions(int H, int W, ncnn::Mat K)
 int main()
 {
     // 一些参数
-    const int POSE = 1;
+    const int POSE = 200;
     float w = 800;
     float h = 800;
     const float downsample = 1.0;
@@ -560,8 +560,7 @@ int main()
         file.read((char*)&model_pos_encoder_hash_table, sizeof model_pos_encoder_hash_table);
         file.close();
     }
-
-
+    
     // read_intrinsics
     ncnn::Mat K(3, 3);
     {
@@ -672,18 +671,6 @@ int main()
 
 
         /////////////////////////////////////////////////////////////////////////// 初始化各种算子、Pipeline、Net
-
-        // 初始化gemm
-        ncnn::Layer* gemm;
-        gemm = ncnn::create_layer(ncnn::LayerType::Gemm);
-        gemm->vkdev = vkdev;
-        ncnn::ParamDict pd;
-        pd.set(2, 1); // transA
-        pd.set(3, 1); // transB
-        pd.set(12, 1); // output elempack
-        gemm->load_param(pd);
-        gemm->load_model(ncnn::ModelBinFromMatArray(0));
-        gemm->create_pipeline(opt);
 
         // 初始化clean_float_pipeline
         ncnn::Pipeline* clean_float_pipeline;
@@ -802,7 +789,14 @@ int main()
         rgb_net.load_param(("assets/" + dataset + "/rgb_net_gemm.param").c_str());
         rgb_net.load_model(("assets/" + dataset + "/rgb_net_gemm.bin").c_str());
 
-
+        // 不能用gemm算子，在android有点小问题，单独开一个model
+        ncnn::Net gemm_net;
+        rgb_net.opt.use_vulkan_compute = true;
+        rgb_net.opt.blob_vkallocator = blob_vkallocator;
+        rgb_net.opt.workspace_vkallocator = blob_vkallocator;
+        rgb_net.opt.staging_vkallocator = staging_vkallocator;
+        gemm_net.load_param("assets/gemm.param");
+        gemm_net.load_model("assets/gemm.bin");
 
 
         /////////////////////////////////////////////////////////////////////////// 预上传固定数据到vulkan
@@ -877,23 +871,19 @@ int main()
 
 
             /////////////////////////////////////////////////////////////////////////////// get_rays
+            ncnn::VkMat rays_d_gpu;
+            {
+                ncnn::Mat rays_d_cpu;
+                ncnn::Extractor ex = gemm_net.create_extractor();
+                ex.input("in0", directions);
+                ex.input("in1", c2w_012);
+                ex.extract("out0", rays_d_cpu);
+                cmd.record_clone(rays_d_cpu, rays_d_gpu, opt);
+                cmd.submit_and_wait();
+                cmd.reset();
+            }
+            ncnn::Mat rays_o = c2w_3;
 
-            // 上传
-            ncnn::VkMat input0_gpu, input1_gpu;
-            cmd.record_clone(directions, input0_gpu, opt);
-            cmd.record_clone(c2w_012, input1_gpu, opt);
-
-            // forward
-            std::vector<ncnn::VkMat> inputs_gpu(2);
-            inputs_gpu[0] = input0_gpu;
-            inputs_gpu[1] = input1_gpu;
-            std::vector<ncnn::VkMat> outputs_gpu(1);
-            gemm->forward(inputs_gpu, outputs_gpu, cmd, opt);
-            cmd.submit_and_wait();
-            cmd.reset();
-
-            ncnn::Mat rays_o = c2w_3; // (3)
-            ncnn::VkMat rays_d_gpu = outputs_gpu[0]; // (640000,3)
 
 
             /////////////////////////////////////////////////////////////////////////////// ray_aabb_intersection
@@ -1090,7 +1080,6 @@ int main()
                         cmd.reset();
                     }
 
-                    
                     // 跑kernel
                     {
                         std::vector<ncnn::VkMat> bindings(10);
@@ -1633,6 +1622,7 @@ int main()
 
         /////////////////////////////////////////////////////////////////////////////// 释放
         {
+            gemm_net.clear();
             rgb_net.clear();
             xyz_encoder_net.clear();
 
@@ -1644,9 +1634,6 @@ int main()
             delete ray_aabb_intersect_pipeline;
             delete clean_int_pipeline;
             delete clean_float_pipeline;
-
-            gemm->destroy_pipeline(opt);
-            delete gemm;
 
             vkdev->reclaim_blob_allocator(blob_vkallocator);
             vkdev->reclaim_staging_allocator(blob_vkallocator);
