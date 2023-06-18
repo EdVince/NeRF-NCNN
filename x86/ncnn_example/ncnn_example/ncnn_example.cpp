@@ -7,6 +7,7 @@
 #include <cmath>
 #include <sstream>
 #include <iomanip>
+#include <numeric>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -72,32 +73,17 @@ void main()
     int input_offset = 3 * gx;
     int output_offset = 2 * gx;
 
-    float ray_o_0 = rays_o_data[0];
-    float ray_o_1 = rays_o_data[1];
-    float ray_o_2 = rays_o_data[2];
+    vec3 ray_o = vec3(rays_o_data[0], rays_o_data[1], rays_o_data[2]);
+    vec3 inv_d = vec3(1.0 / rays_d_data[input_offset + 0], 1.0 / rays_d_data[input_offset + 1], 1.0 / rays_d_data[input_offset + 2]);
 
-    float inv_d_0 = 1.0 / rays_d_data[input_offset + 0];
-    float inv_d_1 = 1.0 / rays_d_data[input_offset + 1];
-    float inv_d_2 = 1.0 / rays_d_data[input_offset + 2];
+    vec3 t_min = (vec3(p.center - p.half_size) - ray_o) * inv_d;
+    vec3 t_max = (vec3(p.center + p.half_size) - ray_o) * inv_d;
 
-    float t_min_0 = (p.center - p.half_size - ray_o_0) * inv_d_0;
-    float t_min_1 = (p.center - p.half_size - ray_o_1) * inv_d_1;
-    float t_min_2 = (p.center - p.half_size - ray_o_2) * inv_d_2;
+    vec3 _t1 = min(t_min, t_max);
+    vec3 _t2 = max(t_min, t_max);
 
-    float t_max_0 = (p.center + p.half_size - ray_o_0) * inv_d_0;
-    float t_max_1 = (p.center + p.half_size - ray_o_1) * inv_d_1;
-    float t_max_2 = (p.center + p.half_size - ray_o_2) * inv_d_2;
-
-    float _t1_0 = min(t_min_0, t_max_0);
-    float _t1_1 = min(t_min_1, t_max_1);
-    float _t1_2 = min(t_min_2, t_max_2);
-
-    float _t2_0 = max(t_min_0, t_max_0);
-    float _t2_1 = max(t_min_1, t_max_1);
-    float _t2_2 = max(t_min_2, t_max_2);
-
-    float t1 = max(max(_t1_0,_t1_1),_t1_2);
-    float t2 = min(min(_t2_0,_t2_1),_t2_2);
+    float t1 = max(max(_t1.x,_t1.y),_t1.z);
+    float t2 = min(min(_t2.x,_t2.y),_t2.z);
 
     if (t2 > 0) {
         hits_t_data[output_offset + 0] = max(t1, NEAR_DISTANCE);
@@ -160,9 +146,9 @@ int frexp_bit(float x) {
     return exponent;
 }
 
-int mip_from_pos(float xyz_0, float xyz_1, float xyz_2, int cascades)
+int mip_from_pos(vec3 xyz, int cascades)
 {
-    float mx = max(max(abs(xyz_0),abs(xyz_1)),abs(xyz_2));
+    float mx = max(max(abs(xyz.x),abs(xyz.y)),abs(xyz.z));
     int exponent = frexp_bit(mx) + 1;
     return min(cascades - 1, max(0, exponent));
 }
@@ -181,8 +167,7 @@ uint expand_bits(uint v) {
     return v;
 }
 
-uint morton3D(uint x, uint y, uint z) {
-    uvec3 xyz = uvec3(x, y, z);
+uint morton3D(uvec3 xyz) {
     xyz = uvec3(expand_bits(xyz.x), expand_bits(xyz.y), expand_bits(xyz.z));
     return xyz.x | (xyz.y << 1u) | (xyz.z << 2u);
 }
@@ -195,17 +180,9 @@ void main()
     int grid_size3 = p.grid_size * p.grid_size * p.grid_size;
     float grid_size_inv = 1.0 / p.grid_size;
     
-    float ray_o_0 = rays_o_data[0];
-    float ray_o_1 = rays_o_data[1];
-    float ray_o_2 = rays_o_data[2];
-
-    float ray_d_0 = rays_d_data[3 * r + 0];
-    float ray_d_1 = rays_d_data[3 * r + 1];
-    float ray_d_2 = rays_d_data[3 * r + 2];
-
-    float d_inv_0 = 1.0 / ray_d_0;
-    float d_inv_1 = 1.0 / ray_d_1;
-    float d_inv_2 = 1.0 / ray_d_2;
+    vec3 ray_o = vec3(rays_o_data[0], rays_o_data[1], rays_o_data[2]);
+    vec3 ray_d = vec3(rays_d_data[3 * r + 0], rays_d_data[3 * r + 1], rays_d_data[3 * r + 2]);
+    vec3 d_inv = vec3(1.0) / ray_d;
 
     float t = hits_t_data[2 * r + 0];
     float t2 = hits_t_data[2 * r + 1];
@@ -214,21 +191,17 @@ void main()
     int start_based = n * p.max_samples;
 
     while ( (0<t) && (t<t2) && (s<p.max_samples) ) {
-        float xyz_0 = ray_o_0 + t * ray_d_0;
-        float xyz_1 = ray_o_1 + t * ray_d_1;
-        float xyz_2 = ray_o_2 + t * ray_d_2;
+        vec3 xyz = ray_o + vec3(t) * ray_d;
 
         float dt = calc_dt(t, p.exp_step_factor, p.grid_size, p.scale);
-        int mip = max(mip_from_pos(xyz_0,xyz_1,xyz_2,p.cascades),mip_from_dt(dt,p.grid_size,p.cascades));
+        int mip = max(mip_from_pos(xyz,p.cascades),mip_from_dt(dt,p.grid_size,p.cascades));
 
         float mip_bound = min(pow(2., mip - 1), p.scale);
         float mip_bound_inv = 1.0 / mip_bound;
 
-        float nxyz_0 = clamp(0.5 * (xyz_0 * mip_bound_inv + 1) * p.grid_size, 0.0, p.grid_size - 1.0);
-        float nxyz_1 = clamp(0.5 * (xyz_1 * mip_bound_inv + 1) * p.grid_size, 0.0, p.grid_size - 1.0);
-        float nxyz_2 = clamp(0.5 * (xyz_2 * mip_bound_inv + 1) * p.grid_size, 0.0, p.grid_size - 1.0);
+        vec3 nxyz = clamp(vec3(0.5 * p.grid_size) * (xyz * vec3(mip_bound_inv) + vec3(1.0)), vec3(0.0), vec3(p.grid_size - 1.0));
 
-        int idx = mip * grid_size3 + int(morton3D(uint(nxyz_0),uint(nxyz_1),uint(nxyz_2)));
+        int idx = mip * grid_size3 + int(morton3D(uvec3(nxyz)));
         uint occ = density_bitfield_data[idx/8u] & (1u << (idx % 8u));
 
         if (occ > 0) {
@@ -242,11 +215,9 @@ void main()
             s += 1;
         }
         else {
-            float txyz_0 = (((nxyz_0 + 0.5 + 0.5 * sign(ray_d_0)) * grid_size_inv * 2 - 1.0) * mip_bound - xyz_0) * d_inv_0;
-            float txyz_1 = (((nxyz_1 + 0.5 + 0.5 * sign(ray_d_1)) * grid_size_inv * 2 - 1.0) * mip_bound - xyz_1) * d_inv_1;
-            float txyz_2 = (((nxyz_2 + 0.5 + 0.5 * sign(ray_d_2)) * grid_size_inv * 2 - 1.0) * mip_bound - xyz_2) * d_inv_2;
+            vec3 txyz = (((nxyz + vec3(0.5) + vec3(0.5) * sign(ray_d)) * vec3(grid_size_inv * 2) - vec3(1.0)) * vec3(mip_bound) - xyz) * d_inv;
 
-            float t_target = t + max(0, min(min(txyz_0,txyz_1),txyz_2));
+            float t_target = t + max(0, min(min(txyz.x,txyz.y),txyz.z));
             t += calc_dt(t, p.exp_step_factor, p.grid_size, p.scale);
             while (t < t_target) {
                 t += calc_dt(t, p.exp_step_factor, p.grid_size, p.scale);
@@ -276,7 +247,6 @@ layout (binding = 4) readonly buffer offsets { int offsets_data[]; };
 
 layout (push_constant) uniform parameter
 {
-    int B;
     int out_dim;
 } p;
 
@@ -547,6 +517,20 @@ int main()
     const int hash_encoder_hash_map_sizes[16] = { 4096, 10648, 21952, 50656, 117656, 262144, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288, 524288 };
     const int hash_encoder_offsets[16] = { 0, 4096, 14744, 36696, 87352, 205008, 467152, 991440, 1515728, 2040016, 2564304, 3088592, 3612880, 4137168, 4661456, 5185744 };
 
+    // 模型的一些定值
+    float exp_step_factor = 0;
+    if (model_scale > 0.5)
+        exp_step_factor = 1 / 256;
+    float T_threshold = 1e-4;
+    int max_samples = MAX_SAMPLES;
+    int N_rays = WH; // 光线的数量 // len(rays_o)
+    int min_samples = 4;
+    if (exp_step_factor == 0)
+        min_samples = 1;
+    int model_cascades = (std::max)(1 + static_cast<int>(std::ceil(std::log2(2 * model_scale))), 1);
+    int model_grid_size = 128;
+    float model_exp_step_factor = exp_step_factor;
+
 
 
     // 读取模型的一些固定数据
@@ -810,8 +794,6 @@ int main()
                 p[i] = model_pos_encoder_hash_table[i];
             }
             cmd.record_clone(params, params_gpu, opt);
-            cmd.submit_and_wait();
-            cmd.reset();
         }
 
         // 预上传density_bitfield
@@ -823,8 +805,6 @@ int main()
                 data[i] = (int)model_density_bitfield[i];
             }
             cmd.record_clone(density_bitfield_cpu, density_bitfield_gpu, opt);
-            cmd.submit_and_wait();
-            cmd.reset();
         }
 
         // 预上传hash_map_sizes
@@ -836,8 +816,6 @@ int main()
                 p[i] = hash_encoder_hash_map_sizes[i];
             }
             cmd.record_clone(hash_map_sizes, hash_map_sizes_gpu, opt);
-            cmd.submit_and_wait();
-            cmd.reset();
         }
 
         // 预上传offsets
@@ -849,28 +827,42 @@ int main()
                 p[i] = hash_encoder_offsets[i];
             }
             cmd.record_clone(offsets, offsets_gpu, opt);
-            cmd.submit_and_wait();
-            cmd.reset();
         }
 
+        // 预开辟结果结果数组
+        ncnn::VkMat opacity_gpu(N_rays, (size_t)4u, 1, blob_vkallocator);
+        ncnn::VkMat depth_gpu(N_rays, (size_t)4u, 1, blob_vkallocator);
+        ncnn::VkMat rgb_gpu(3, N_rays, (size_t)4u, 1, blob_vkallocator);
+
+        cmd.submit_and_wait();
+        cmd.reset();
 
 
 
 
-
+        /////////////////////////////////////////////////////////////////////////// start
         // 循环生成每一个pose的图像
         for (int pose_idx = 0; pose_idx < POSE; pose_idx++) {
-
 
             ncnn::Mat c2w_012 = c2w_012s.channel(pose_idx);
             ncnn::Mat c2w_3 = c2w_3s.channel(pose_idx);
 
+            // recored time
+            int its = 0;
+            double get_rays_time = 0;
+            double ray_aabb_intersection_time = 0;
+            double raymarching_test_time = 0;
+            double pos_encoder_time = 0;
+            double xyz_encoder_time = 0;
+            double dir_encoder_time = 0;
+            double rgb_net_time = 0;
+            double composite_test_time = 0;
+            double t1 = 0, t2 = 0;
 
             double start_time = ncnn::get_current_time();
 
-
-
             /////////////////////////////////////////////////////////////////////////////// get_rays
+            t1 = ncnn::get_current_time();
             ncnn::VkMat rays_d_gpu;
             {
                 ncnn::Mat rays_d_cpu;
@@ -883,19 +875,27 @@ int main()
                 cmd.reset();
             }
             ncnn::Mat rays_o = c2w_3;
-
+            t2 = ncnn::get_current_time();
+            get_rays_time = t2 - t1;
 
 
             /////////////////////////////////////////////////////////////////////////////// ray_aabb_intersection
+            t1 = ncnn::get_current_time();
             ncnn::VkMat hits_t_gpu;
             ncnn::VkMat rays_o_gpu;
             {
-                // 上传数据
+                // 准备数据
                 cmd.record_clone(c2w_3, rays_o_gpu, opt);
-                //hits_t_gpu.create(2, 640000, 4u, 1, blob_vkallocator);
+                hits_t_gpu.create(2, WH, 4u, 1, blob_vkallocator);
                 {
-                    ncnn::Mat hits_t_cpu(2, WH); hits_t_cpu.fill<float>(0.0f);
-                    cmd.record_clone(hits_t_cpu, hits_t_gpu, opt);
+                    std::vector<ncnn::VkMat> bindings(1);
+                    bindings[0] = hits_t_gpu;
+                    std::vector<ncnn::vk_constant_type> constants(0);
+                    ncnn::VkMat dispatcher;
+                    dispatcher.w = 2 * WH;
+                    dispatcher.h = 1;
+                    dispatcher.c = 1;
+                    cmd.record_pipeline(clean_float_pipeline, bindings, constants, dispatcher);
                 }
 
                 // 跑kernel
@@ -915,42 +915,22 @@ int main()
                     dispatcher.c = 1;
 
                     cmd.record_pipeline(ray_aabb_intersect_pipeline, bindings, constants, dispatcher);
-
-                    cmd.submit_and_wait();
-                    cmd.reset();
                 }
-            }
 
+                cmd.submit_and_wait();
+                cmd.reset();
+            }
+            t2 = ncnn::get_current_time();
+            ray_aabb_intersection_time += t2 - t1;
 
 
             /////////////////////////////////////////////////////////////////////////////// __render_rays_test
-            float exp_step_factor = 0;
-            if (model_scale > 0.5)
-                exp_step_factor = 1 / 256;
-            float T_threshold = 1e-4;
-            int max_samples = MAX_SAMPLES;
-
-            int N_rays = WH; // 光线的数量 // len(rays_o)
-            int samples = 0, total_samples = 0;
-            int min_samples = 4;
-            if (exp_step_factor == 0)
-                min_samples = 1;
+            int samples = 0;
 
             // 初始的有效下标
             std::vector<int> alive_indices(WH);
-            for (int i = 0; i < WH; i++) {
-                alive_indices[i] = i;
-            }
+            std::iota(alive_indices.begin(), alive_indices.end(), 0);
 
-            // 模型的一些定值
-            int model_cascades = (std::max)(1 + static_cast<int>(std::ceil(std::log2(2 * model_scale))), 1);
-            int model_grid_size = 128;
-            float model_exp_step_factor = exp_step_factor;
-
-
-            ncnn::VkMat opacity_gpu(N_rays, (size_t)4u, 1, blob_vkallocator);
-            ncnn::VkMat depth_gpu(N_rays, (size_t)4u, 1, blob_vkallocator);
-            ncnn::VkMat rgb_gpu(3, N_rays, (size_t)4u, 1, blob_vkallocator);
             { // 为新开辟的vkmat置零，不置零会出问题
                 {
                     std::vector<ncnn::VkMat> bindings(1);
@@ -987,7 +967,6 @@ int main()
             }
 
 
-
             ///////////////////////////////////////////////////////////////////////////////
             while (samples < max_samples) {
 
@@ -999,24 +978,19 @@ int main()
                 int N_samples = (std::max)((std::min)(N_rays / N_alive, 64), min_samples);
                 samples += N_samples;
 
+                // 上传alive_indices —— 后面会被修改，所以要动态更新上传
+                ncnn::VkMat alive_indices_gpu;
+                {
+                    ncnn::Mat alive_indices_cpu(alive_indices.size(), alive_indices.data(), (size_t)4u);
+                    cmd.record_clone(alive_indices_cpu, alive_indices_gpu, opt);
+                }
 
                 /////////////////////////////////////////////////////////////////////////////// raymarching_test
+                t1 = ncnn::get_current_time();
                 ncnn::Mat packed_info, ray_indices, deltas, ts;
                 {
                     int model_max_samples = N_samples;
-
                     int model_N_rays = alive_indices.size();
-
-                    // 上传alive_indices —— 后面会被修改，所以要动态更新上传
-                    ncnn::VkMat alive_indices_gpu;
-                    {
-                        ncnn::Mat alive_indices_cpu(alive_indices.size());
-                        int* data = (int*)alive_indices_cpu.data;
-                        for (int i = 0; i < alive_indices.size(); i++) {
-                            data[i] = alive_indices[i];
-                        }
-                        cmd.record_clone(alive_indices_cpu, alive_indices_gpu, opt);
-                    }
 
                     // 开辟结果空间
                     ncnn::VkMat ray_indices_gpu(model_N_rays * model_max_samples, 4u, 1, blob_vkallocator);
@@ -1076,8 +1050,6 @@ int main()
                             dispatcher.c = 1;
                             cmd.record_pipeline(clean_int_pipeline, bindings, constants, dispatcher);
                         }
-                        cmd.submit_and_wait();
-                        cmd.reset();
                     }
 
                     // 跑kernel
@@ -1108,16 +1080,15 @@ int main()
                         dispatcher.c = 1;
 
                         cmd.record_pipeline(raymarching_test_pipeline, bindings, constants, dispatcher);
-
                         cmd.record_clone(ray_indices_gpu, ray_indices_cpu, opt);
                         cmd.record_clone(valid_mask_gpu, valid_mask_cpu, opt);
                         cmd.record_clone(deltas_gpu, deltas_cpu, opt);
                         cmd.record_clone(ts_gpu, ts_cpu, opt);
                         cmd.record_clone(samples_counter_gpu, samples_counter_cpu, opt);
-
-                        cmd.submit_and_wait();
-                        cmd.reset();
                     }
+
+                    cmd.submit_and_wait();
+                    cmd.reset();
 
 
                     /////////////////////////////////////////////////////////////////////////////// 后处理
@@ -1147,7 +1118,6 @@ int main()
                         ray_indices.create(num);
                         deltas.create(num);
                         ts.create(num);
-
                         {
                             int* p = (int*)valid_mask_cpu.data;
 
@@ -1169,11 +1139,14 @@ int main()
                         }
                     }
                 }
+                t2 = ncnn::get_current_time();
+                raymarching_test_time += t2 - t1;
 
 
                 if (ray_indices.w == 0) {
                     break;
                 }
+
 
                 ncnn::Mat ray_o_local = rays_o;
                 ncnn::Mat ray_d_local(3, ray_indices.w);
@@ -1224,17 +1197,12 @@ int main()
 
 
                     /////////////////////////////////////////////////////////////////////////////// pos_encoder
-                    
+                    t1 = ncnn::get_current_time();
                     ncnn::VkMat output_embedding_gpu;
                     {
-                        // input_pos
                         ncnn::VkMat input_pos_gpu;
                         cmd.record_clone(x, input_pos_gpu, opt);
 
-                        // params
-                        // 已经提前上传好了
-
-                        // output_embedding
                         output_embedding_gpu.create(hash_encoder_out_dim, x.h, (size_t)4u, 1, blob_vkallocator);
                         { // 为新开辟的vkmat置零，不置零会出问题
                             std::vector<ncnn::VkMat> bindings(1);
@@ -1247,7 +1215,6 @@ int main()
                             cmd.record_pipeline(clean_float_pipeline, bindings, constants, dispatcher);
                         }
 
-
                         // 跑kernel
                         {
                             std::vector<ncnn::VkMat> bindings(5);
@@ -1257,9 +1224,8 @@ int main()
                             bindings[3] = hash_map_sizes_gpu; // int
                             bindings[4] = offsets_gpu; // int
 
-                            std::vector<ncnn::vk_constant_type> constants(2);
-                            constants[0].i = x.h;
-                            constants[1].i = hash_encoder_out_dim;
+                            std::vector<ncnn::vk_constant_type> constants(1);
+                            constants[0].i = hash_encoder_out_dim;
 
                             ncnn::VkMat dispatcher;
                             dispatcher.w = x.h;
@@ -1267,11 +1233,13 @@ int main()
                             dispatcher.c = 1;
 
                             cmd.record_pipeline(hash_encoder_pipeline, bindings, constants, dispatcher);
-
-                            cmd.submit_and_wait();
-                            cmd.reset();
                         }
+
+                        cmd.submit_and_wait();
+                        cmd.reset();
                     }
+                    t2 = ncnn::get_current_time();
+                    pos_encoder_time += t2 - t1;
 
 
                     /////////////////////////////////////////////////////////////////////////////// xyz_encoder
@@ -1295,9 +1263,6 @@ int main()
                                 dispatcher.c = 1;
 
                                 cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
-
-                                cmd.submit_and_wait();
-                                cmd.reset();
                             }
 
                             ncnn::Mat output_embedding_padding_cpu;
@@ -1305,11 +1270,14 @@ int main()
                             cmd.submit_and_wait();
                             cmd.reset();
 
+                            t1 = ncnn::get_current_time();
                             ncnn::Mat h_pad_cpu;
                             ncnn::Extractor ex = xyz_encoder_net.create_extractor();
                             ex.input("in0", output_embedding_padding_cpu);
                             ex.extract("out0", h_pad_cpu);
-                            
+                            t2 = ncnn::get_current_time();
+                            xyz_encoder_time += t2 - t1;
+
                             ncnn::VkMat h_pad_gpu;
                             cmd.record_clone(h_pad_cpu, h_pad_gpu, opt);
                             cmd.submit_and_wait();
@@ -1332,15 +1300,11 @@ int main()
                                 dispatcher.c = 1;
 
                                 cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
-
-                                cmd.submit_and_wait();
-                                cmd.reset();
                             }
 
                             cmd.record_clone(h_gpu, h_cpu, opt);
                             cmd.submit_and_wait();
                             cmd.reset();
-
                         }
                     }
 
@@ -1370,6 +1334,7 @@ int main()
 
 
                 /////////////////////////////////////////////////////////////////////////////// dir_encoder
+                t1 = ncnn::get_current_time();
                 ncnn::VkMat dir_encoder_output_embedding_gpu;
                 {
                     // 准备输入输出
@@ -1402,9 +1367,6 @@ int main()
                         dispatcher.c = 1;
 
                         cmd.record_pipeline(dir_encoder_pipeline, bindings, constants, dispatcher);
-
-                        cmd.submit_and_wait();
-                        cmd.reset();
                     }
                 }
 
@@ -1412,6 +1374,9 @@ int main()
                 cmd.record_clone(dir_encoder_output_embedding_gpu, d_cpu, opt);
                 cmd.submit_and_wait();
                 cmd.reset();
+
+                t2 = ncnn::get_current_time();
+                dir_encoder_time += t2 - t1;
 
 
                 /////////////////////////////////////////////////////////////////////////////// rgb_net
@@ -1436,9 +1401,6 @@ int main()
                         dispatcher.c = 1;
 
                         cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
-
-                        cmd.submit_and_wait();
-                        cmd.reset();
                     }
                     {
                         ncnn::VkMat h_gpu;
@@ -1457,9 +1419,6 @@ int main()
                         dispatcher.c = 1;
 
                         cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
-
-                        cmd.submit_and_wait();
-                        cmd.reset();
                     }
                     
                     ncnn::Mat d_padding_cpu, h_padding_cpu;
@@ -1468,6 +1427,7 @@ int main()
                     cmd.submit_and_wait();
                     cmd.reset();
 
+                    t1 = ncnn::get_current_time();
                     ncnn::Mat rgbs_padding_cpu;
                     {
                         ncnn::Extractor ex = rgb_net.create_extractor();
@@ -1475,6 +1435,8 @@ int main()
                         ex.input("in1", h_padding_cpu);
                         ex.extract("out0", rgbs_padding_cpu);
                     }
+                    t2 = ncnn::get_current_time();
+                    rgb_net_time += t2 - t1;
 
                     ncnn::VkMat rgbs_padding_gpu;
                     cmd.record_clone(rgbs_padding_cpu, rgbs_padding_gpu, opt);
@@ -1498,9 +1460,6 @@ int main()
                         dispatcher.c = 1;
 
                         cmd.record_pipeline(copy_pipeline, bindings, constants, dispatcher);
-
-                        cmd.submit_and_wait();
-                        cmd.reset();
                     }
 
                     cmd.record_clone(rgbs_gpu, rgbs_cpu, opt);
@@ -1510,6 +1469,7 @@ int main()
 
 
                 /////////////////////////////////////////////////////////////////////////////// composite_test
+                t1 = ncnn::get_current_time();
                 {
                     // 准备输入输出
                     ncnn::VkMat sigmas_gpu, rgbs_gpu, deltas_gpu, ts_gpu, pack_info_gpu;
@@ -1518,16 +1478,6 @@ int main()
                     cmd.record_clone(deltas, deltas_gpu, opt);
                     cmd.record_clone(ts, ts_gpu, opt);
                     cmd.record_clone(packed_info, pack_info_gpu, opt);
-
-                    ncnn::VkMat alive_indices_gpu;
-                    {
-                        ncnn::Mat alive_indices_cpu(alive_indices.size());
-                        int* data = (int*)alive_indices_cpu.data;
-                        for (int i = 0; i < alive_indices.size(); i++) {
-                            data[i] = alive_indices[i];
-                        }
-                        cmd.record_clone(alive_indices_cpu, alive_indices_gpu, opt);
-                    }
 
                     // 跑kernel
                     {
@@ -1557,6 +1507,7 @@ int main()
                         cmd.submit_and_wait();
                         cmd.reset();
 
+                        // 更新alive_indices
                         {
                             int* data = (int*)alive_indices_cpu.data;
                             int sum = 0;
@@ -1578,6 +1529,10 @@ int main()
                         }
                     }
                 }
+                t2 = ncnn::get_current_time();
+                composite_test_time += t2 - t1;
+
+                its += 1;
             }
 
 
@@ -1605,8 +1560,16 @@ int main()
 
             /////////////////////////////////////////////////////////////////////////////// Log
             double end_time = ncnn::get_current_time();
-            printf("generating: %3d/%d \t\tfps:%.2f\n", pose_idx + 1, POSE, 1000 / (end_time - start_time));
-
+            printf("generating: %3d/%d \t fps:%.2f\n", pose_idx + 1, POSE, 1000 / (end_time - start_time));
+            printf("                 its:%d\n", its);
+            printf("            get_rays:%8.2fms\n", get_rays_time);
+            printf("    ray_intersection:%8.2fms\n", ray_aabb_intersection_time);
+            printf("         raymarching:%8.2fms\n", raymarching_test_time);
+            printf("         pos_encoder:%8.2fms\n", pos_encoder_time);
+            printf("     xyz_encoder_net:%8.2fms\n", xyz_encoder_time);
+            printf("         dir_encoder:%8.2fms\n", dir_encoder_time);
+            printf("             rgb_net:%8.2fms\n", rgb_net_time);
+            printf("           composite:%8.2fms\n", composite_test_time);
 
             /////////////////////////////////////////////////////////////////////////////// 保存图像
             std::vector<unsigned char> result(img_w * img_h * 3);
@@ -1615,7 +1578,6 @@ int main()
                 result[i] = (unsigned char)(data[i] * 255.0);
             }
             stbi_write_png(("results/" + std::to_string(pose_idx + 1) + ".png").c_str(), img_w, img_h, 3, result.data(), img_w * 3);
-
         }
 
 
